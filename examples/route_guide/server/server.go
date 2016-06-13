@@ -265,11 +265,21 @@ func main() {
 	tracer := lightstep.NewTracer(lightstep.Options{
 		AccessToken: "DEVELOPMENT_TOKEN_bhs",
 	})
+	// TODO: the code SHOULD read like this:
+	//
+	//    opts = append(opts, grpcot.InterceptServer(tracer))
+	//
 	opts = append(opts, grpc.UnaryInterceptor(
 		func(
 			ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler,
 		) (resp interface{}, err error) {
 			fmt.Println("BHS0", info.FullMethod, tracer, reflect.TypeOf(tracer))
+			// TODO: this is really not correct at all... should be doing
+			//
+			//    tracer.Join(info.FullMethod, opentracing.TextMap, XYZXYZ(...))
+			//
+			// ... a la https://github.com/go-kit/kit/blob/master/tracing/opentracing/grpc.go#L40
+			//
 			parentSpan := opentracing.SpanFromContext(ctx) // may be nil
 			span := tracer.StartSpanWithOptions(opentracing.StartSpanOptions{
 				OperationName: info.FullMethod,
