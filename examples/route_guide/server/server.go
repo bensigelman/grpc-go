@@ -45,6 +45,7 @@ import (
 	"io/ioutil"
 	"math"
 	"net"
+	"reflect"
 	"time"
 
 	"golang.org/x/net/context"
@@ -52,8 +53,11 @@ import (
 
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/grpclog"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/lightstep/lightstep-tracer-go"
+	"github.com/opentracing/opentracing-go"
 
 	pb "google.golang.org/grpc/examples/route_guide/routeguide"
 )
@@ -219,6 +223,30 @@ func newServer() *routeGuideServer {
 	return s
 }
 
+type metadataReaderWriter struct {
+	metadata.MD
+}
+
+func (w metadataReaderWriter) Set(key, val string) {
+	fmt.Println(key, " -> ", val)
+	w.MD[key] = append(w.MD[key], val)
+}
+
+func (w metadataReaderWriter) ForeachKey(handler func(key, val string) error) error {
+	for k, vals := range w.MD {
+		for _, v := range vals {
+			if dk, dv, err := metadata.DecodeKeyValue(k, v); err == nil {
+				if err = handler(dk, dv); err != nil {
+					return err
+				}
+			} else {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func main() {
 	flag.Parse()
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
@@ -233,6 +261,36 @@ func main() {
 		}
 		opts = []grpc.ServerOption{grpc.Creds(creds)}
 	}
+
+	tracer := lightstep.NewTracer(lightstep.Options{
+		AccessToken: "DEVELOPMENT_TOKEN_bhs",
+	})
+	opts = append(opts, grpc.UnaryInterceptor(
+		func(
+			ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler,
+		) (resp interface{}, err error) {
+			fmt.Println("BHS0", info.FullMethod, tracer, reflect.TypeOf(tracer))
+			parentSpan := opentracing.SpanFromContext(ctx) // may be nil
+			span := tracer.StartSpanWithOptions(opentracing.StartSpanOptions{
+				OperationName: info.FullMethod,
+				Parent:        parentSpan,
+			})
+			ctx = opentracing.ContextWithSpan(ctx, span)
+			defer func() {
+				fmt.Println("BHS10", span)
+				span.Finish()
+			}()
+			md, ok := metadata.FromContext(ctx)
+			if !ok {
+				md = metadata.MD{}
+			}
+			fmt.Println("BHS1")
+			tracer.Inject(span, opentracing.TextMap, metadataReaderWriter{md})
+			fmt.Println("BHS2", md)
+			ctx = metadata.NewContext(ctx, md)
+			return handler(ctx, req)
+		}))
+
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterRouteGuideServer(grpcServer, newServer())
 	grpcServer.Serve(lis)
